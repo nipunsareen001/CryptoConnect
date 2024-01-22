@@ -1,0 +1,12 @@
+-----------DEVELOPMENT-----------------------
+
+.\pyinstaller.exe --onefile --hidden-import=pyodbc --hidden-import=email.mime.multipart --hidden-import=email.mime.text --hidden-import=smtplib --add-data "helpers/helper.py;." .\autoWithdrawl\autoWithdrawl.py
+.\pyinstaller.exe --onefile --hidden-import=pyodbc --hidden-import=email.mime.multipart --hidden-import=email.mime.text --hidden-import=smtplib --add-data "helpers/helper.py;." .\readDeposit\readTokenADeposits.py
+.\pyinstaller.exe --onefile --hidden-import=pyodbc --hidden-import=email.mime.multipart --hidden-import=email.mime.text --hidden-import=smtplib --add-data "helpers/helper.py;." .\readDeposit\readUSDTDeposits.py
+
+//new update present: continue inside while loop
+.\pyinstaller.exe --onefile --hidden-import=pyodbc --hidden-import=email.mime.multipart --hidden-import=email.mime.text --hidden-import=smtplib --add-data "helpers/helper.py;." .\addressGeneration\addressGeneration.py
+
+
+.\pyinstaller.exe --onefile --hidden-import=pyodbc --hidden-import=email.mime.multipart --hidden-import=email.mime.text --hidden-import=smtplib --add-data "helpers/helper.py;." .\readDeposit\readTokenAOldDeposits.py
+

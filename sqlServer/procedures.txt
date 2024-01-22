@@ -1,0 +1,642 @@
+
+
+//-----WITHDRAW----------------
+
+
+
+
+CREATE TABLE Blockchain_Withdraw_logs (
+    id INT PRIMARY KEY IDENTITY(1, 1),
+    member_withdraw_id INT,
+    transaction_hash VARCHAR(70),
+    from_hotwallet_address VARCHAR(50),
+    to_user_address VARCHAR(50),
+    value_token DECIMAL(18, 8),
+    value_trx_str NVARCHAR(100),
+    token_name VARCHAR(15),
+    withdraw_time DATETIME,
+    transaction_status INT,
+    exception VARCHAR(500)
+);
+
+--
+
+CREATE PROCEDURE ProcessWithdrawal
+    @withdrawal_id INT,
+    @transaction_hash VARCHAR(70),
+    @from_hotwallet_address VARCHAR(50),
+    @to_user_address VARCHAR(50),
+    @value_token DECIMAL(18, 8),
+    @value_trx_str NVARCHAR(100),
+    @token_name VARCHAR(15),
+    @withdraw_time DATETIME,
+	@transaction_status INT
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    -- Update auto_withdrawal_status
+    UPDATE member_withdraw_request
+    SET auto_withdrawal_status = 2
+    WHERE id = @withdrawal_id;
+
+    -- Insert a new row into Blockchain_Withdraw_logs
+    INSERT INTO Blockchain_Withdraw_logs (member_withdraw_id, transaction_hash, from_hotwallet_address, to_user_address, value_token, value_trx_str, token_name, withdraw_time, transaction_status)
+    VALUES (@withdrawal_id, @transaction_hash, @from_hotwallet_address, @to_user_address, @value_token, @value_trx_str, @token_name, @withdraw_time, @transaction_status);
+    
+END;
+
+--
+
+CREATE PROCEDURE InsertFakeWithdrawalEntries
+    @dc_net_coin DECIMAL(18, 8),
+    @nvc_wallet_address NVARCHAR(50),
+    @number_of_entries INT
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    DECLARE @i INT = 0;
+    DECLARE @half_entries INT = @number_of_entries / 2;
+    DECLARE @in_wallet_type INT;
+    
+    WHILE @i < @number_of_entries
+    BEGIN
+        -- Determine in_wallet_type based on the iteration
+        IF @i < @half_entries
+            SET @in_wallet_type = 1;
+        ELSE
+            SET @in_wallet_type = 2;
+        
+        -- Insert a fake entry with current datetime
+        INSERT INTO member_withdraw_request (dc_net_coin, nvc_wallet_address, in_wallet_type, in_status, auto_withdrawal_status, dt_request)
+        VALUES (@dc_net_coin, @nvc_wallet_address, @in_wallet_type, 0, 0, GETDATE());
+        
+        SET @i = @i + 1;
+    END;
+    
+END;
+
+
+--
+
+EXEC InsertFakeWithdrawalEntries
+    @dc_net_coin = 10.12345678,  
+    @nvc_wallet_address = 'fake_address',  
+    @number_of_entries = 2;  
+
+
+--
+
+
+ALTER PROCEDURE NewWithdrawalsForAutoTransfer
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    -- Create a temporary table to hold the updated rows
+    CREATE TABLE #UpdatedWithdrawals (
+        id INT,
+        in_wallet_type INT,
+        dc_net_coin DECIMAL(18, 8),
+		nvc_wallet_address NVARCHAR(50)
+    );
+
+    -- Update the auto_withdrawal_status and capture updated rows
+    UPDATE m
+    SET m.auto_withdrawal_status = 1
+    OUTPUT INSERTED.id, INSERTED.in_wallet_type, INSERTED.dc_net_coin, INSERTED.nvc_wallet_address INTO #UpdatedWithdrawals
+    FROM member_withdraw_request AS m
+    WHERE m.id IN (
+        SELECT TOP 1 m.id
+        FROM member_withdraw_request AS m
+        LEFT JOIN Blockchain_Withdraw_logs AS b ON m.id = b.member_withdraw_id
+        WHERE m.in_status = 0 AND m.auto_withdrawal_status = 0 AND b.member_withdraw_id IS NULL ORDER BY m.dt_request ASC
+    );
+
+    -- Retrieve the updated rows from the temporary table
+    SELECT id, in_wallet_type, dc_net_coin, nvc_wallet_address
+    FROM #UpdatedWithdrawals;
+
+    -- Clean up temporary table
+    DROP TABLE #UpdatedWithdrawals;
+END;
+
+
+//------DEPOSIT-----------------
+
+
+CREATE TABLE Blockchain_Deposit_logs (
+    id INT PRIMARY KEY IDENTITY(1,1) NOT NULL,
+    transaction_hash VARCHAR(70) NOT NULL,
+    from_user_address VARCHAR(50) NOT NULL,
+    to_hotwallet_address VARCHAR(50) NOT NULL,
+    value_token DECIMAL(18, 8) NOT NULL,
+value_trx_str nvarchar(100) NOT NULL,
+    token_name VARCHAR(15) NOT NULL,
+deposit_time DATETIME NOT NULL,
+    processing_status INT,
+    processing_time DATETIME
+);
+
+
+--
+
+CREATE PROCEDURE InsertUniqueBlockchainDepositLog
+    @transaction_hash VARCHAR(70),
+    @from_user_address VARCHAR(50),
+    @to_hotwallet_address VARCHAR(50),
+    @value_token DECIMAL(18, 8),
+    @value_trx_str NVARCHAR(100),
+    @token_name VARCHAR(15),
+    @deposit_time DATETIME
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    -- Check if the transaction_hash already exists
+    IF NOT EXISTS (SELECT 1 FROM Blockchain_Deposit_logs WHERE transaction_hash = @transaction_hash)
+    BEGIN
+        -- Insert the data if the transaction_hash is unique
+        INSERT INTO Blockchain_Deposit_logs (transaction_hash, from_user_address, to_hotwallet_address, value_token, value_trx_str, token_name, deposit_time)
+        VALUES (@transaction_hash, @from_user_address, @to_hotwallet_address, @value_token, @value_trx_str, @token_name, @deposit_time);
+    END;
+END;
+
+
+-------- V2: unique deposit address ----
+
+create table member_deposit_address
+(
+id int identity(1,1),
+in_regno int default 0,
+nvc_address nvarchar(max),
+nvc_private_key nvarchar(max),
+in_status int default 0,
+dt_created datetime,
+in_active int default 1
+)
+
+
+--
+
+ALTER PROCEDURE FetchAndUpdateTop100MemberDepositAddresses
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    -- Declare a table variable to hold the top 100 IDs
+    DECLARE @Top100IDs TABLE (
+        id INT
+    );
+
+    -- Fetch the top 100 IDs where in_status = 0
+    INSERT INTO @Top100IDs (id)
+    SELECT TOP 100 id
+    FROM member_deposit_address
+    WHERE in_status = 0;
+
+    -- Update in_status to 1 for the fetched IDs
+    UPDATE member_deposit_address
+    SET in_status = 1
+    WHERE id IN (SELECT id FROM @Top100IDs);
+
+    -- Return the top 100 IDs that were updated
+    SELECT id
+    FROM @Top100IDs;
+END;
+
+--
+
+CREATE PROCEDURE UpdateMemberDepositAddress
+    @id INT,
+    @nvc_address NVARCHAR(MAX),
+    @nvc_private_key NVARCHAR(MAX),
+    @dt_created DATETIME
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    -- Update the row with the provided parameters and set in_status to 2
+    UPDATE member_deposit_address
+    SET nvc_address = @nvc_address,
+        nvc_private_key = @nvc_private_key,
+        dt_created = @dt_created,
+        in_status = 2
+    WHERE id = @id;
+END;
+
+--
+
+ALTER PROCEDURE InsertFakeDataWithInStatusZero
+    @number_of_entries INT
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    DECLARE @i INT = 1;
+
+    -- Insert fake data with in_status = 0
+    WHILE @i <= @number_of_entries
+    BEGIN
+        INSERT INTO member_deposit_address (in_status)
+        VALUES (0);
+
+        SET @i = @i + 1;
+    END;
+END;
+
+--
+
+EXEC InsertFakeDataWithInStatusZero @number_of_entries = 10;
+
+--
+
+ALTER PROCEDURE InsertUniqueBlockchainDepositLogWithCheck
+    @transaction_hash VARCHAR(70),
+    @from_user_address VARCHAR(50),
+    @to_hotwallet_address VARCHAR(50),
+    @value_token DECIMAL(18, 8),
+    @value_trx_str NVARCHAR(100),
+    @token_name VARCHAR(15),
+    @deposit_time DATETIME
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    DECLARE @result INT;
+
+    -- Check if the to_hotwallet_address exists in member_deposit_address
+    IF EXISTS (
+        SELECT 1
+        FROM member_deposit_address
+        WHERE nvc_address = @to_hotwallet_address
+    )
+    BEGIN
+        -- Check if the transaction_hash already exists
+        IF NOT EXISTS (SELECT 1 FROM Blockchain_Deposit_logs WHERE transaction_hash = @transaction_hash)
+        BEGIN
+            -- Insert the data if the transaction_hash is unique
+            INSERT INTO Blockchain_Deposit_logs (transaction_hash, from_user_address, to_hotwallet_address, value_token, value_trx_str, token_name, deposit_time)
+            VALUES (@transaction_hash, @from_user_address, @to_hotwallet_address, @value_token, @value_trx_str, @token_name, @deposit_time);
+
+            -- Set the result to 1 to indicate success
+            SET @result = 1;
+        END
+        ELSE
+        BEGIN
+            -- Set the result to 0 to indicate that the transaction_hash already exists
+            SET @result = 0;
+        END;
+    END
+    ELSE
+    BEGIN
+        -- Set the result to -1 to indicate that to_hotwallet_address does not exist in member_deposit_address
+        SET @result = -1;
+    END;
+
+    -- Return the result as a result set
+    SELECT @result AS 'result';
+END;
+
+--
+
+DROP table LastCheckedBlock
+
+--
+
+CREATE TABLE LastCheckedUsdtBlock (
+    id INT PRIMARY KEY IDENTITY(1, 1),
+    deposit_type VARCHAR(25) NOT NULL, 
+    last_block_number INT NOT NULL 
+);
+
+--
+
+INSERT INTO LastCheckedUsdtBlock (deposit_type, last_block_number)
+SELECT 'USDT', 0
+WHERE NOT EXISTS (SELECT 1 FROM LastCheckedUsdtBlock WHERE deposit_type = 'USDT');
+
+--
+
+CREATE TABLE LastCheckedTokenAOldBlock (
+    id INT PRIMARY KEY IDENTITY(1, 1),
+    deposit_type VARCHAR(25) NOT NULL, 
+    last_block_number INT NOT NULL 
+);
+
+--
+
+INSERT INTO LastCheckedTokenAOldBlock (deposit_type, last_block_number)
+SELECT 'TokenB', 0
+WHERE NOT EXISTS (SELECT 1 FROM LastCheckedTokenAOldBlock WHERE deposit_type = 'TokenB');
+
+--
+
+CREATE TABLE LastCheckedTokenABlock (
+    id INT PRIMARY KEY IDENTITY(1, 1),
+    deposit_type VARCHAR(25) NOT NULL, 
+    last_block_number INT NOT NULL 
+);
+
+--
+
+INSERT INTO LastCheckedTokenABlock (deposit_type, last_block_number)
+SELECT 'TokenA', 0
+WHERE NOT EXISTS (SELECT 1 FROM LastCheckedTokenABlock WHERE deposit_type = 'TokenA');
+
+--
+
+----------------------------------------
+COLLECTING Deposits at central address
+------------------------------------------------
+
+CREATE TABLE deposit_address_status (
+    id INT PRIMARY KEY,
+    member_deposit_address_id INT,
+    in_regno INT,
+    approved_address NVARCHAR(MAX) DEFAULT (''),
+    usdt_balance DECIMAL(18, 8) DEFAULT (0.0),
+    TokenA_balance DECIMAL(18, 8) DEFAULT (0.0),
+    TokenB_balance DECIMAL(18, 8) DEFAULT (0.0),
+    usdt_approved_status INT DEFAULT (0),
+    TokenA_approved_status INT DEFAULT (0),
+    TokenB_approved_status INT DEFAULT (0),
+    usdt_central_transfer_status INT DEFAULT (0),
+    TokenA_central_transfer_status INT DEFAULT (0),
+    TokenB_central_transfer_status INT DEFAULT (0),
+    FOREIGN KEY (member_deposit_address_id) REFERENCES member_deposit_address (id)
+);
+
+--
+
+CREATE TABLE Collecting_Deposits_Logs (
+    id INT PRIMARY KEY IDENTITY(1, 1),
+    deposit_address_status_id INT,
+    trxhash VARCHAR(70),
+    from_address NVARCHAR(50),
+    to_address NVARCHAR(50),
+    token_name NVARCHAR(15),
+    transaction_reason NVARCHAR(50),
+    gas_fee DECIMAL(18, 8),
+    token_value DECIMAL(18, 8),
+    transaction_time DATETIME ,
+    FOREIGN KEY (deposit_address_status_id) REFERENCES Deposit_Address_Status(id)
+);
+
+--
+
+ALTER PROCEDURE UpdateMemberDepositAddress
+    @id INT,
+    @nvc_address NVARCHAR(MAX),
+    @nvc_private_key NVARCHAR(MAX),
+    @dt_created DATETIME,
+    @approved_address NVARCHAR(MAX)
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    -- Update the row in member_deposit_address with the provided parameters and set in_status to 2
+    UPDATE member_deposit_address
+    SET nvc_address = @nvc_address,
+        nvc_private_key = @nvc_private_key,
+        dt_created = @dt_created,
+        in_status = 2
+    WHERE id = @id;
+
+    -- Insert a new row into deposit_address_status with the provided @approved_address
+    INSERT INTO deposit_address_status (member_deposit_address_id, in_regno, approved_address)
+    SELECT id, in_regno, @approved_address
+    FROM member_deposit_address
+    WHERE id = @id;
+END;
+
+--
+
+INSERT INTO deposit_address_status (member_deposit_address_id, in_regno, approved_address)
+SELECT mda.id, mda.in_regno, 'Approved_Address'
+FROM member_deposit_address mda
+WHERE NOT EXISTS (
+    SELECT 1
+    FROM deposit_address_status das
+    WHERE das.member_deposit_address_id = mda.id
+);
+
+--
+
+UPDATE das
+SET das.TokenA_balance = COALESCE(TokenA_total, 0),
+    das.TokenB_balance = COALESCE(TokenB_total, 0),
+    das.usdt_balance = COALESCE(usdt_total, 0)
+FROM deposit_address_status das
+JOIN member_deposit_address mda ON das.member_deposit_address_id = mda.id
+LEFT JOIN (
+    SELECT
+        md.id AS member_deposit_address_id,
+        SUM(CASE WHEN b.token_name = 'TokenA' THEN b.value_token ELSE 0 END) AS TokenA_total,
+        SUM(CASE WHEN b.token_name = 'TokenB' THEN b.value_token ELSE 0 END) AS TokenB_total,
+        SUM(CASE WHEN b.token_name = 'USDT' THEN b.value_token ELSE 0 END) AS usdt_total
+    FROM Blockchain_Deposit_logs b
+    JOIN member_deposit_address md ON b.from_user_address = md.nvc_address
+    GROUP BY md.id
+) deposit_totals ON deposit_totals.member_deposit_address_id = das.member_deposit_address_id;
+
+--
+
+ALTER PROCEDURE InsertUniqueBlockchainDepositLogWithCheck
+    @transaction_hash VARCHAR(70),
+    @from_user_address VARCHAR(50),
+    @to_hotwallet_address VARCHAR(50),
+    @value_token DECIMAL(18, 8),
+    @value_trx_str NVARCHAR(100),
+    @token_name VARCHAR(15),
+    @deposit_time DATETIME
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    DECLARE @result INT;
+
+    -- Check if the to_hotwallet_address exists in member_deposit_address
+    IF EXISTS (
+        SELECT 1
+        FROM member_deposit_address
+        WHERE nvc_address = @to_hotwallet_address
+    )
+    BEGIN
+        -- Check if the transaction_hash already exists
+        IF NOT EXISTS (SELECT 1 FROM Blockchain_Deposit_logs WHERE transaction_hash = @transaction_hash)
+        BEGIN
+            -- Insert the data if the transaction_hash is unique
+            INSERT INTO Blockchain_Deposit_logs (transaction_hash, from_user_address, to_hotwallet_address, value_token, value_trx_str, token_name, deposit_time)
+            VALUES (@transaction_hash, @from_user_address, @to_hotwallet_address, @value_token, @value_trx_str, @token_name, @deposit_time);
+
+            -- Set the result to 1 to indicate success
+            SET @result = 1;
+
+            -- Check the token_name and update the corresponding balance in deposit_address_status
+            IF @token_name = 'TokenA'
+            BEGIN
+                UPDATE deposit_address_status
+                SET TokenA_balance = ISNULL(TokenA_balance, 0) + @value_token
+                WHERE member_deposit_address_id = (SELECT id FROM member_deposit_address WHERE nvc_address = @to_hotwallet_address);
+            END
+            ELSE IF @token_name = 'TokenB'
+            BEGIN
+                UPDATE deposit_address_status
+                SET TokenB_balance = ISNULL(TokenB_balance, 0) + @value_token
+                WHERE member_deposit_address_id = (SELECT id FROM member_deposit_address WHERE nvc_address = @to_hotwallet_address);
+            END
+            ELSE IF @token_name = 'USDT'
+            BEGIN
+                UPDATE deposit_address_status
+                SET usdt_balance = ISNULL(usdt_balance, 0) + @value_token
+                WHERE member_deposit_address_id = (SELECT id FROM member_deposit_address WHERE nvc_address = @to_hotwallet_address);
+            END
+        END
+        ELSE
+        BEGIN
+            -- Set the result to 0 to indicate that the transaction_hash already exists
+            SET @result = 0;
+        END;
+    END
+    ELSE
+    BEGIN
+        -- Set the result to -1 to indicate that to_hotwallet_address does not exist in member_deposit_address
+        SET @result = -1;
+    END;
+
+    -- Return the result as a result set
+    SELECT @result AS 'result';
+END;
+
+--
+
+CREATE PROCEDURE FetchForApproval
+    @token_name VARCHAR(15)
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    DECLARE @nvc_address NVARCHAR(MAX);
+    DECLARE @deposit_status_id INT;
+
+    -- Check the token_name and update the corresponding balance and approved_status
+    IF @token_name = 'USDT'
+    BEGIN
+        -- Retrieve nvc_address and deposit_status_id where usdt_balance > 0 and usdt_approved_status = 0
+        SELECT TOP 1 @nvc_address = m.nvc_address, @deposit_status_id = d.id
+        FROM member_deposit_address m
+        JOIN deposit_address_status d ON m.id = d.member_deposit_address_id
+        WHERE d.usdt_balance > 0 AND d.usdt_approved_status = 0;
+
+        -- Set usdt_approved_status to 1 for the selected record
+        IF @deposit_status_id IS NOT NULL
+        BEGIN
+            UPDATE deposit_address_status
+            SET usdt_approved_status = 1
+            WHERE id = @deposit_status_id;
+        END;
+    END
+    ELSE IF @token_name = 'TokenA'
+    BEGIN
+        -- Retrieve nvc_address and deposit_status_id where TokenA_balance > 0 and TokenA_approved_status = 0
+        SELECT TOP 1 @nvc_address = m.nvc_address, @deposit_status_id = d.id
+        FROM member_deposit_address m
+        JOIN deposit_address_status d ON m.id = d.member_deposit_address_id
+        WHERE d.TokenA_balance > 0 AND d.TokenA_approved_status = 0;
+
+        -- Set TokenA_approved_status to 1 for the selected record
+        IF @deposit_status_id IS NOT NULL
+        BEGIN
+            UPDATE deposit_address_status
+            SET TokenA_approved_status = 1
+            WHERE id = @deposit_status_id;
+        END;
+    END
+    ELSE IF @token_name = 'TokenB'
+    BEGIN
+        -- Retrieve nvc_address and deposit_status_id where TokenB_balance > 0 and TokenB_approved_status = 0
+        SELECT TOP 1 @nvc_address = m.nvc_address, @deposit_status_id = d.id
+        FROM member_deposit_address m
+        JOIN deposit_address_status d ON m.id = d.member_deposit_address_id
+        WHERE d.TokenB_balance > 0 AND d.TokenB_approved_status = 0;
+
+        -- Set TokenB_approved_status to 1 for the selected record
+        IF @deposit_status_id IS NOT NULL
+        BEGIN
+            UPDATE deposit_address_status
+            SET TokenB_approved_status = 1
+            WHERE id = @deposit_status_id;
+        END;
+    END;
+
+    -- Return the nvc_address and deposit_status_id (if applicable)
+    SELECT @deposit_status_id AS 'deposit_status_id', @nvc_address AS 'nvc_address';
+END;
+
+--
+
+CREATE PROCEDURE ResetApprovalStatus
+    @token_name VARCHAR(15),
+    @id INT
+    @approved_status INT
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    -- Check the token_name and update the corresponding approved_status
+    IF @token_name = 'USDT'
+    BEGIN
+        -- Set usdt_approved_status to @approved_status for the provided id
+        UPDATE deposit_address_status
+        SET usdt_approved_status = @approved_status
+        WHERE id = @id;
+    END
+    ELSE IF @token_name = 'TokenA'
+    BEGIN
+        -- Set TokenA_approved_status to @approved_status for the provided id
+        UPDATE deposit_address_status
+        SET TokenA_approved_status = @approved_status
+        WHERE id = @id;
+    END
+    ELSE IF @token_name = 'TokenB'
+    BEGIN
+        -- Set TokenB_approved_status to @approved_status for the provided id
+        UPDATE deposit_address_status
+        SET TokenB_approved_status = @approved_status
+        WHERE id = @id;
+    END;
+END;
+
+--
+
+CREATE PROCEDURE AddDepositLogAndUpdateStatus
+    @deposit_address_status_id INT,
+    @trxhash VARCHAR(70),
+    @from_address NVARCHAR(50),
+    @to_address NVARCHAR(50),
+    @token_name_transfered NVARCHAR(15),
+    @token_name_approved NVARCHAR(15),
+    @transaction_reason NVARCHAR(50),
+    @gas_fee DECIMAL(18, 8),
+    @token_value DECIMAL(18, 8),
+    @transaction_time DATETIME,
+    @new_approved_status INT
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    -- Add new entry to Collecting_Deposits_Logs
+    INSERT INTO Collecting_Deposits_Logs (deposit_address_status_id, trxhash, from_address, to_address, token_name, transaction_reason, gas_fee, token_value, transaction_time)
+    VALUES (@deposit_address_status_id, @trxhash, @from_address, @to_address, @token_name_transfered, @transaction_reason, @gas_fee, @token_value, @transaction_time);
+
+    -- Update approved_status in Deposit_Address_Status table based on token_name
+    UPDATE Deposit_Address_Status
+    SET 
+        usdt_approved_status = CASE WHEN @token_name_approved = 'USDT' THEN @new_approved_status ELSE usdt_approved_status END,
+        TokenB_approved_status = CASE WHEN @token_name_approved = 'TokenB' THEN @new_approved_status ELSE TokenB_approved_status END,
+        TokenA_approved_status = CASE WHEN @token_name_approved = 'TokenA' THEN @new_approved_status ELSE TokenA_approved_status END
+    WHERE id = @deposit_address_status_id;
+END;
+

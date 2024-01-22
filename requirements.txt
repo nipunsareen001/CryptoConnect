@@ -1,0 +1,8 @@
+csvkit==1.0.7
+python-dateutil==2.8.2
+web3==5.25.0
+pyodbc==4.0.32
+enum34==1.1.10
+email-validator==1.1.3
+logging==0.4.9.6
+smtplib==0.1.1
